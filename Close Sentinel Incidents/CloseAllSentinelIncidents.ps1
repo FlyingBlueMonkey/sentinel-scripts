@@ -7,7 +7,9 @@ param(
     [string]$subscriptionId = "",
     [string]$resourceGroupName = "",
     [string]$workspaceName = "",
-    [string]$incidentAgeFilter = "30"
+    [string]$incidentAgeFilter = "30",
+    [string]$incidentTitle = "",
+    [switch]$NoPrompt
 )
 
 # Example:
@@ -18,29 +20,59 @@ param(
 # Managed identity auth:
 # powershell .\CloseAllSentinelIncidents.ps1 -authMode ManagedIdentity -subscriptionId "<subscription-id>" -resourceGroupName "<resource-group-name>" -workspaceName "<workspace-name>"
 # Use -incidentAgeFilter all to remove the date filter entirely.
+# Use -incidentTitle "<incident title text>" to only close incidents with titles matching that text.
+
+function Get-PlainTextFromSecureString {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Security.SecureString]$SecureValue
+    )
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureValue)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+function Resolve-RequiredParam {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$CurrentValue,
+        [switch]$AsSecure
+    )
+
+    if ($CurrentValue) {
+        return $CurrentValue
+    }
+
+    if ($NoPrompt) {
+        throw "$Name is required."
+    }
+
+    if ($AsSecure) {
+        $secureInput = Read-Host "Enter $Name" -AsSecureString
+        return Get-PlainTextFromSecureString -SecureValue $secureInput
+    }
+
+    return Read-Host "Enter $Name"
+}
 
 # Get a token
-if (-not $subscriptionId) {
-    throw "subscriptionId is required."
-}
-if (-not $resourceGroupName) {
-    throw "resourceGroupName is required."
-}
-if (-not $workspaceName) {
-    throw "workspaceName is required."
-}
+$subscriptionId = Resolve-RequiredParam -Name "subscriptionId" -CurrentValue $subscriptionId
+$resourceGroupName = Resolve-RequiredParam -Name "resourceGroupName" -CurrentValue $resourceGroupName
+$workspaceName = Resolve-RequiredParam -Name "workspaceName" -CurrentValue $workspaceName
 
 switch ($authMode) {
     'ClientSecret' {
-        if (-not $tenantId) {
-            throw "tenantId is required when authMode is ClientSecret."
-        }
-        if (-not $clientId) {
-            throw "clientId is required when authMode is ClientSecret."
-        }
-        if (-not $clientSecret) {
-            throw "clientSecret is required when authMode is ClientSecret."
-        }
+        $tenantId = Resolve-RequiredParam -Name "tenantId" -CurrentValue $tenantId
+        $clientId = Resolve-RequiredParam -Name "clientId" -CurrentValue $clientId
+        $clientSecret = Resolve-RequiredParam -Name "clientSecret" -CurrentValue $clientSecret -AsSecure
 
         $tokenUri = "https://login.microsoftonline.com/$tenantId/oauth2/token"
         $tokenBody = @{
@@ -53,53 +85,59 @@ switch ($authMode) {
         $accessToken = $tokenResponse.access_token
     }
     'Interactive' {
-        if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
-            throw "Az.Accounts module is required for Interactive auth. Install it with: Install-Module Az.Accounts -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            Connect-AzAccount -Tenant $tenantId | Out-Null
-        }
-        else {
-            Connect-AzAccount | Out-Null
-        }
-
-        Set-AzContext -Subscription $subscriptionId | Out-Null
-        $token = Get-AzAccessToken -ResourceUrl "https://management.azure.com/"
-        if ($token.Token -is [System.Security.SecureString]) {
-            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($token.Token)
-            try {
-                $accessToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        try {
+            if ($tenantId) {
+                Connect-AzAccount -Tenant $tenantId -ErrorAction Stop | Out-Null
             }
-            finally {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            else {
+                Connect-AzAccount -ErrorAction Stop | Out-Null
+            }
+
+            Set-AzContext -Subscription $subscriptionId -ErrorAction Stop | Out-Null
+            $token = Get-AzAccessToken -ResourceUrl "https://management.azure.com/" -ErrorAction Stop
+            if ($token.Token -is [System.Security.SecureString]) {
+                $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($token.Token)
+                try {
+                    $accessToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                }
+                finally {
+                    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                }
+            }
+            else {
+                $accessToken = $token.Token
             }
         }
-        else {
-            $accessToken = $token.Token
+        catch {
+            throw $_
         }
     }
     'ManagedIdentity' {
-        if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
-            throw "Az.Accounts module is required for ManagedIdentity auth. Install it with: Install-Module Az.Accounts -Scope CurrentUser"
-        }
-
-        Connect-AzAccount -Identity | Out-Null
-        Set-AzContext -Subscription $subscriptionId | Out-Null
-        $token = Get-AzAccessToken -ResourceUrl "https://management.azure.com/"
-        if ($token.Token -is [System.Security.SecureString]) {
-            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($token.Token)
-            try {
-                $accessToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        try {
+            Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+            Set-AzContext -Subscription $subscriptionId -ErrorAction Stop | Out-Null
+            $token = Get-AzAccessToken -ResourceUrl "https://management.azure.com/" -ErrorAction Stop
+            if ($token.Token -is [System.Security.SecureString]) {
+                $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($token.Token)
+                try {
+                    $accessToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                }
+                finally {
+                    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                }
             }
-            finally {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            else {
+                $accessToken = $token.Token
             }
         }
-        else {
-            $accessToken = $token.Token
+        catch {
+            throw $_
         }
     }
+}
+
+if (-not $accessToken) {
+    throw "Failed to acquire an Azure access token."
 }
 
 $processedIncidents = 0
@@ -133,8 +171,13 @@ foreach ($incident in $incidents) {
     $title = $incident.properties.title.ToString() 
     $escapedTitle = $title -replace "'", ""
     $severity = $incident.properties.severity.ToString()
+    $targetUriWithProvider = "https://management.azure.com/" + $targetUri
 
-    $uri = "https://management.azure.com/" + $targetUri +"?api-version=2024-03-01"
+    if ($incidentTitle -and -not $title.Equals($incidentTitle, [System.StringComparison]::OrdinalIgnoreCase)) {
+        continue
+    }
+
+    $uri = $targetUriWithProvider +"?api-version=2024-03-01"
     #Write-Host "Title: $escapedTitle"
     #Write-Host "Incident Status: $incidentStatus"
     #Write-Host "Incident Date: $incidentDate"
@@ -148,12 +191,13 @@ foreach ($incident in $incidents) {
     catch {
         # If a rate limit error occurs, wait for 60 seconds before retrying
         if ($_.Exception.Message -like "*rate limit*") {
+            Write-Host "Rate limit hit. Waiting for 60 seconds before retrying..."
             Start-Sleep -Seconds 60
         } else {
             throw $_
         }
     }
-    Write-Host "Next link: $($response.nextLink)"
+    Write-Host "Checking for more incidents to process..."
     $uri = $response.nextLink
 
 }
