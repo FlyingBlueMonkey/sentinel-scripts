@@ -1,12 +1,12 @@
 # CloseAllSentinelIncidents.ps1
 
-This script authenticates to Azure using a service principal, queries Microsoft Sentinel incidents in a Log Analytics workspace, and closes matching incidents automatically.
+This script authenticates to Azure, queries Microsoft Sentinel incidents in a Log Analytics workspace, and closes matching incidents automatically.
 
 It is designed for bulk cleanup workflows (for example, closing stale `New` incidents).
 
 ## What the Script Does
 
-- Authenticates against Azure AD using client credentials.
+- Authenticates to Azure using one of three modes: `ClientSecret`, `Interactive`, or `ManagedIdentity`.
 - Calls the Azure Management API for Microsoft Sentinel incidents.
 - Filters incidents where status is `New`.
 - Optionally applies an age filter based on `createdTimeUtc`.
@@ -26,25 +26,31 @@ It is designed for bulk cleanup workflows (for example, closing stale `New` inci
   - `tenantId`
   - `clientId`
   - `clientSecret`
+- If using `Interactive` or `ManagedIdentity` mode:
+  - Az PowerShell module with `Az.Accounts` available.
+  - Valid signed-in user context (`Interactive`) or managed identity-enabled host (`ManagedIdentity`).
 - RBAC permissions in Azure for the target Sentinel workspace (or broader scope) that allow reading and updating incidents.
 
 ## Setup
 
-1. Create or identify an Azure AD application/service principal.
-2. Create a client secret and record its value.
-3. Grant the service principal appropriate Azure RBAC on the target scope.
-4. Collect the required values:
+1. Choose an auth mode:
+  - `ClientSecret`: service principal and secret
+  - `Interactive`: user sign-in
+  - `ManagedIdentity`: Azure resource identity
+2. Ensure the chosen identity has Azure RBAC rights to read and update Sentinel incidents.
+3. Collect the required values:
    - Tenant ID
-   - Client ID
-   - Client Secret
    - Subscription ID
    - Resource Group Name
    - Log Analytics Workspace Name
+
+For `ClientSecret`, also collect Client ID and Client Secret.
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `authMode` | string | No | `"ClientSecret"` | Authentication mode: `ClientSecret`, `Interactive`, or `ManagedIdentity`. |
 | `tenantId` | string | Yes | `""` | Azure AD tenant ID used to request an access token. |
 | `clientId` | string | Yes | `""` | App registration (service principal) client ID. |
 | `clientSecret` | string | Yes | `""` | Client secret for the app registration. |
@@ -53,12 +59,19 @@ It is designed for bulk cleanup workflows (for example, closing stale `New` inci
 | `workspaceName` | string | Yes | `""` | Log Analytics workspace name linked to Sentinel. |
 | `incidentAgeFilter` | string | No | `"30"` | Number of days for age filtering, or `all` to disable date filtering. |
 
+Parameter requirements by auth mode:
+
+- `ClientSecret`: requires `tenantId`, `clientId`, `clientSecret`, `subscriptionId`, `resourceGroupName`, `workspaceName`.
+- `Interactive`: requires `subscriptionId`, `resourceGroupName`, `workspaceName`; `tenantId` optional.
+- `ManagedIdentity`: requires `subscriptionId`, `resourceGroupName`, `workspaceName`.
+
 ## Usage
 
-### Basic (default: incidents older than 30 days)
+### ClientSecret mode (default auth mode)
 
 ```powershell
 powershell .\CloseAllSentinelIncidents.ps1 \
+  -authMode ClientSecret \
   -tenantId "<tenant-id>" \
   -clientId "<client-id>" \
   -clientSecret "<client-secret>" \
@@ -67,23 +80,32 @@ powershell .\CloseAllSentinelIncidents.ps1 \
   -workspaceName "<workspace-name>"
 ```
 
-### Close incidents older than 90 days
+### Interactive mode (no app registration required)
 
 ```powershell
 powershell .\CloseAllSentinelIncidents.ps1 \
-  -tenantId "<tenant-id>" \
-  -clientId "<client-id>" \
-  -clientSecret "<client-secret>" \
+  -authMode Interactive \
   -subscriptionId "<subscription-id>" \
   -resourceGroupName "<resource-group-name>" \
   -workspaceName "<workspace-name>" \
   -incidentAgeFilter 90
 ```
 
+### ManagedIdentity mode (no app registration required)
+
+```powershell
+powershell .\CloseAllSentinelIncidents.ps1 \
+  -authMode ManagedIdentity \
+  -subscriptionId "<subscription-id>" \
+  -resourceGroupName "<resource-group-name>" \
+  -workspaceName "<workspace-name>"
+```
+
 ### Close all `New` incidents (no date filter)
 
 ```powershell
 powershell .\CloseAllSentinelIncidents.ps1 \
+  -authMode ClientSecret \
   -tenantId "<tenant-id>" \
   -clientId "<client-id>" \
   -clientSecret "<client-secret>" \
@@ -114,8 +136,9 @@ Next link:
 ## Troubleshooting
 
 - Authentication failures:
-  - Validate `tenantId`, `clientId`, and `clientSecret`.
+  - For `ClientSecret`, validate `tenantId`, `clientId`, and `clientSecret`.
   - Confirm the secret is not expired.
+  - For `Interactive` and `ManagedIdentity`, confirm `Az.Accounts` is installed.
 - Authorization failures (403):
   - Ensure RBAC permissions are assigned at the correct scope.
 - No incidents closed:
